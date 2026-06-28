@@ -35,7 +35,18 @@ export interface AudioConfig {
 }
 
 export interface AgentConfig {
-  listen: { provider: { type: "deepgram"; model: string } };
+  listen: {
+    provider: {
+      type: "deepgram";
+      model: string;
+      language?: string;
+      version?: string;
+      language_hints?: string[];
+      eot_threshold?: number;
+      eager_eot_threshold?: number;
+      eot_timeout_ms?: number;
+    };
+  };
   think: {
     provider: { type: string; model: string };
     prompt: string;
@@ -46,7 +57,17 @@ export interface AgentConfig {
 }
 
 export interface SpeakConfig {
-  provider: { type: "deepgram"; model: string };
+  provider: {
+    type: string;
+    model?: string;
+    model_id?: string;
+    voice?: { mode: string; id: string };
+    language?: string;
+  };
+  endpoint?: {
+    url: string;
+    headers: Record<string, string>;
+  };
 }
 
 export interface StsConfig {

@@ -6,7 +6,7 @@ export async function POST() {
   if (process.env.API_KEY_STRATEGY === "provided") {
     return NextResponse.json(
       process.env.DEEPGRAM_API_KEY
-        ? { key: process.env.DEEPGRAM_API_KEY }
+        ? { access_token: process.env.DEEPGRAM_API_KEY }
         : new DeepgramError(
             "Can't do local development without setting a `DEEPGRAM_API_KEY` environment variable.",
           ),

@@ -3,14 +3,9 @@ import { Suspense, useState } from "react";
 import { App } from "./components/App";
 import Intelligence from "./components/Intelligence";
 import { stsConfig } from "./lib/constants";
-import {
-  isConversationMessage,
-  useVoiceBot,
-  VoiceBotStatus,
-} from "./context/VoiceBotContextProvider";
+import { isConversationMessage, useVoiceBot } from "./context/VoiceBotContextProvider";
 import { CaretIcon } from "./components/icons/CaretIcon";
 import { withBasePath } from "./utils/deepgramUtils";
-import PromptSuggestions from "./components/PromptSuggestions";
 import Conversation from "./components/Conversation";
 import VoiceSelector from "./components/VoiceSelector/VoiceSelector";
 import { isMobile } from "react-device-detect";
@@ -22,7 +17,6 @@ import InstructionInput from "./components/InstructionInput";
 import { TerminalIcon } from "./components/icons/TerminalIcon";
 import Header from "./components/Header";
 import { useStsQueryParams } from "./hooks/UseStsQueryParams";
-import { useDeepgram } from "./context/DeepgramContextProvider";
 import BehindTheScenes from "./components/BehindTheScenes";
 
 const DesktopMenuItems = () => {
@@ -40,9 +34,8 @@ const DesktopMenuItems = () => {
 };
 
 export default function Home() {
-  const { messages, status } = useVoiceBot();
-  const { rateLimited } = useDeepgram();
-  const [conversationOpen, setConversationOpen] = useState(false);
+  const { messages } = useVoiceBot();
+  const [conversationOpen, setConversationOpen] = useState(true);
   const [behindTheScenesOpen, setBehindTheScenesOpen] = useState(false);
 
   const toggleConversation = () => setConversationOpen(!conversationOpen);
@@ -81,26 +74,7 @@ export default function Home() {
                 </div>
               ) : null}
 
-              {/* Speech Bubbles */}
-              {!has4ConversationMessages &&
-                !rateLimited &&
-                status !== VoiceBotStatus.SLEEPING &&
-                status !== VoiceBotStatus.NONE && (
-                  <div>
-                    {/* Desktop */}
-                    <div className="hidden md:flex justify-center text-gray-450">Try saying:</div>
-                    <div className="hidden md:grid max-w-max mx-auto grid-cols-3 gap-4 mt-6 relative">
-                      <PromptSuggestions />
-                    </div>
-                    {/* Mobile */}
-                    <div className="flex md:hidden justify-center text-gray-450 mt-2">
-                      Try saying:
-                    </div>
-                    <div className="scrollable-element w-full flex md:hidden gap-4 items-center mt-4 overflow-x-auto -mr-10">
-                      <PromptSuggestions />
-                    </div>
-                  </div>
-                )}
+              {/* "Try saying" prompt suggestions removed — land directly in the conversation view. */}
             </div>
           </div>
 

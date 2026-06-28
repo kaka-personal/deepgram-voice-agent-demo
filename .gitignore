@@ -28,6 +28,11 @@ yarn-error.log*
 
 # env files
 .env*.local
+.env
+
+# local tooling / non-yarn lockfile
+/.claude/
+package-lock.json
 
 # vercel
 .vercel

@@ -16,6 +16,7 @@ import {
   START_LISTENING,
   START_SLEEPING,
   ADD_MESSAGE,
+  ATTACH_LATENCY,
   SET_PARAMS_ON_COPY_URL,
   ADD_BEHIND_SCENES_EVENT,
 } from "./VoiceBotReducer";
@@ -29,6 +30,9 @@ export enum EventType {
   AGENT_STARTED_SPEAKING = "AgentStartedSpeaking",
   CONVERSATION_TEXT = "ConversationText",
   END_OF_THOUGHT = "EndOfThought",
+  EAGER_END_OF_TURN = "EagerEndOfTurn",
+  TURN_RESUMED = "TurnResumed",
+  END_OF_TURN = "EndOfTurn",
 }
 
 export type VoiceBotMessage = LatencyMessage | ConversationMessage;
@@ -37,12 +41,29 @@ export type LatencyMessage = {
   total_latency: number | null;
   tts_latency: number;
   ttt_latency: number;
+  timestamp?: number;
+  networkRtt?: number | null;
+  // Client-measured time-to-first-audio for the opening greeting (which has no
+  // server-side latency event). When set, the row renders as a greeting metric.
+  greetingTtfa?: number;
+  // Client-measured: user finished speaking → first agent audio byte (real perceived gap).
+  measuredResponse?: number | null;
+  // Agent reply audio length in ms (from received PCM bytes).
+  audioDurationMs?: number;
+  // Eager end-of-turn fired this turn / the turn was resumed (user kept talking).
+  eager?: boolean;
+  resumed?: boolean;
 };
 
 export type ConversationMessage = UserMessage | AssistantMessage;
 
-export type UserMessage = { user: string };
-export type AssistantMessage = { assistant: string };
+export type UserMessage = {
+  user: string;
+  startedAt?: number;
+  endedAt?: number;
+  silenceBefore?: number | null;
+};
+export type AssistantMessage = { assistant: string; latency?: LatencyMessage };
 
 export type BehindTheScenesEvent =
   | { type: EventType.SETTINGS_APPLIED }
@@ -92,6 +113,7 @@ export interface VoiceBotState {
 
 export interface VoiceBotContext extends VoiceBotState {
   addVoicebotMessage: (newMessage: VoiceBotMessage) => void;
+  attachLatency: (latency: LatencyMessage) => void;
   addBehindTheScenesEvent: (data: BehindTheScenesEvent) => void;
   isWaitingForUserVoiceAfterSleep: React.Ref<boolean>;
   startSpeaking: (wakeFromSleep?: boolean) => void;
@@ -146,6 +168,10 @@ export function VoiceBotProvider({ children }: Props) {
 
   const addVoicebotMessage = (newMessage: VoiceBotMessage) => {
     dispatch({ type: ADD_MESSAGE, payload: newMessage });
+  };
+
+  const attachLatency = (latency: LatencyMessage) => {
+    dispatch({ type: ATTACH_LATENCY, payload: latency });
   };
 
   const addBehindTheScenesEvent = (event: BehindTheScenesEvent) => {
@@ -220,6 +246,7 @@ export function VoiceBotProvider({ children }: Props) {
       isWaitingForUserVoiceAfterSleep,
       displayOrder,
       addVoicebotMessage,
+      attachLatency,
       addBehindTheScenesEvent,
       startSpeaking,
       startListening,

@@ -3,6 +3,7 @@ import {
   VoiceBotStatus,
   type ConversationMessage,
   type LatencyMessage,
+  type AssistantMessage,
   type BehindTheScenesEvent,
 } from "./VoiceBotContextProvider";
 
@@ -12,6 +13,7 @@ export const START_SPEAKING = "start_speaking";
 export const START_SLEEPING = "start_sleeping";
 export const INCREMENT_SLEEP_TIMER = "increment_sleep_timer";
 export const ADD_MESSAGE = "add_message";
+export const ATTACH_LATENCY = "attach_latency";
 export const SET_PARAMS_ON_COPY_URL = "set_attach_params_to_copy_url";
 export const ADD_BEHIND_SCENES_EVENT = "add_behind_scenes_event";
 
@@ -22,6 +24,7 @@ export type VoiceBotAction =
   | { type: typeof START_SLEEPING }
   | { type: typeof INCREMENT_SLEEP_TIMER }
   | { type: typeof ADD_MESSAGE; payload: ConversationMessage | LatencyMessage }
+  | { type: typeof ATTACH_LATENCY; payload: LatencyMessage }
   | { type: typeof SET_PARAMS_ON_COPY_URL; payload: boolean }
   | { type: typeof ADD_BEHIND_SCENES_EVENT; payload: BehindTheScenesEvent };
 
@@ -39,6 +42,17 @@ export const voiceBotReducer = (state: VoiceBotState, action: VoiceBotAction) =>
       return { ...state, sleepTimer: state.sleepTimer + 1 };
     case ADD_MESSAGE:
       return { ...state, messages: [...state.messages, action.payload] };
+    case ATTACH_LATENCY: {
+      // Attach the turn's latency to its last assistant message (end-of-turn).
+      const messages = [...state.messages];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if ("assistant" in messages[i]) {
+          messages[i] = { ...(messages[i] as AssistantMessage), latency: action.payload };
+          break;
+        }
+      }
+      return { ...state, messages };
+    }
     case SET_PARAMS_ON_COPY_URL:
       return { ...state, attachParamsToCopyUrl: action.payload };
     case ADD_BEHIND_SCENES_EVENT:

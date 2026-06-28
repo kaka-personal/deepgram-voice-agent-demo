@@ -24,7 +24,7 @@ const DeepgramContextProvider = ({ children }) => {
     setSocketState(0); // connecting
 
     const newSocket = new WebSocket("wss://agent.deepgram.com/v1/agent/converse", [
-      "bearer",
+      "token",
       await getAuthToken(),
     ]);
 

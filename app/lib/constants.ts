@@ -16,11 +16,24 @@ const baseConfig = {
   type: "Settings" as const,
   audio: audioConfig,
   agent: {
-    listen: { provider: { type: "deepgram" as const, model: "nova-3" } },
+    // STT: Flux English (v2) + eager end-of-turn for low latency.
+    listen: {
+      provider: {
+        type: "deepgram" as const,
+        version: "v2",
+        model: "flux-general-en",
+        eot_threshold: 0.7,
+        eager_eot_threshold: 0.5,
+        eot_timeout_ms: 2000,
+      },
+    },
+    // TTS: Deepgram's native Aura voice (English) — fast and no third-party hop.
     speak: { provider: { type: "deepgram" as const, model: "aura-asteria-en" } },
     think: {
-      provider: { type: "open_ai" as const, model: "gpt-4o" },
+      provider: { type: "open_ai" as const, model: "gpt-4o-mini" },
     },
+    // Spoken automatically when the connection opens.
+    greeting: "Hi! I'm Voicebot. How can I help you today?",
   },
   experimental: true,
 };
@@ -33,19 +46,17 @@ export const stsConfig: StsConfig = {
       ...baseConfig.agent.think,
       prompt: `
                 ## Base instructions
-                You are a helpful voice assistant made by Deepgram's engineers.
+                You are a helpful voice assistant made by Deepgram.
                 Respond in a friendly, human, conversational manner.
-                YOU MUST answer in 1-2 sentences at most when the message is not empty.
+                You MUST answer in 1-2 sentences at most when the message is not empty.
                 Always reply to empty messages with an empty message.
-                Ask follow up questions.
-                Ask one question at a time.
-                Your messages should have no more than than 120 characters.
+                Ask follow up questions, one at a time.
+                Keep your messages under 120 characters.
                 Do not use abbreviations for units.
                 Separate all items in a list with commas.
                 Keep responses unique and free of repetition.
-                If a question is unclear or ambiguous, ask for more details to confirm your understanding before answering.
-                If someone asks how you are, or how you are feeling, tell them.
-                Deepgram gave you a mouth and ears so you can take voice as an input. You can listen and speak.
+                If a question is unclear or ambiguous, ask for clarification before answering.
+                If someone asks how you are, tell them.
                 Your name is Voicebot.
                 `,
       functions: [],

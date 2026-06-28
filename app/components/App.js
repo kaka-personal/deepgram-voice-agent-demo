@@ -29,6 +29,7 @@ export const App = ({
     status,
     messages,
     addVoicebotMessage,
+    attachLatency,
     addBehindTheScenesEvent,
     isWaitingForUserVoiceAfterSleep,
     toggleSleep,
@@ -49,7 +50,33 @@ export const App = ({
   const agentVoiceAnalyser = useRef(null);
   const userVoiceAnalyser = useRef(null);
   const startTimeRef = useRef(-1);
-  const [data, setData] = useState();
+  // Latest status in a ref so the message handler (a useCallback) never reads a stale value.
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
+  // User-speech timing for transcript timestamps: when the user started talking,
+  // when the last activity ended (to measure the silence before they spoke).
+  const userSpeechStartRef = useRef(null);
+  const lastActivityEndRef = useRef(null);
+  const pendingSilenceRef = useRef(null);
+  // Latency for a turn arrives (AgentStartedSpeaking) mid-turn; we stash it and attach it
+  // to the turn's last assistant message at AgentAudioDone, so it never gets misaligned
+  // (e.g. by the greeting, which has no latency).
+  const pendingLatencyRef = useRef(null);
+
+  // Server latency (ttt/tts/total) is measured inside Deepgram and excludes the
+  // client↔Deepgram network. We measure one round-trip (Settings→SettingsApplied)
+  // to surface the China→US network leg the server-side numbers don't show.
+  const settingsSentAtRef = useRef(null);
+  const networkRttRef = useRef(null);
+  // Client-side per-turn metrics: greeting first-audio, real response gap, audio length, eager/resumed.
+  const settingsAppliedAtRef = useRef(null);
+  const greetingMeasuredRef = useRef(false);
+  const userDoneAtRef = useRef(null);
+  const turnFirstAudioRef = useRef(null);
+  const turnAudioBytesRef = useRef(0);
+  const turnEagerRef = useRef(false);
+  const turnResumedRef = useRef(false);
   const [isInitialized, setIsInitialized] = useState(requiresUserActionToInitialize ? false : null);
   const previousVoice = usePrevious(voice);
   const previousPrompt = usePrevious(prompt);
@@ -141,12 +168,11 @@ export const App = ({
         const combinedStsConfig = applyParamsToConfig(defaultStsConfig);
 
         sendSocketMessage(socket, combinedStsConfig);
+        settingsSentAtRef.current = Date.now();
         startMicrophone();
         startListening(true);
-        if (pathname === "/") {
-          // This is the "base" demo at /agent
-          toggleSleep();
-        }
+        // Start awake (do not toggleSleep here) so the configured `greeting`
+        // is actually spoken on connect — sleeping would suppress it.
       };
 
       socket.addEventListener("open", onOpen);
@@ -203,19 +229,142 @@ export const App = ({
    * */
   const onMessage = useCallback(
     async (event) => {
+      // Binary frames are TTS audio — play them directly.
       if (event.data instanceof ArrayBuffer) {
-        if (status !== VoiceBotStatus.SLEEPING && !isWaitingForUserVoiceAfterSleep.current) {
-          bufferAudio(event.data); // Process the ArrayBuffer data to play the audio
+        if (statusRef.current !== VoiceBotStatus.SLEEPING && !isWaitingForUserVoiceAfterSleep.current) {
+          if (turnFirstAudioRef.current == null) turnFirstAudioRef.current = Date.now();
+          turnAudioBytesRef.current += event.data.byteLength;
+          bufferAudio(event.data);
         }
-      } else {
-        console.log(event?.data);
-        // Handle other types of messages such as strings
-        setData(event.data);
-        onMessageEvent(event.data);
+        return;
+      }
+
+      onMessageEvent(event.data);
+
+      let parsedData;
+      try {
+        parsedData = JSON.parse(event.data);
+      } catch (error) {
+        console.error(event.data, error);
+        return;
+      }
+      if (!parsedData) return;
+
+      maybeRecordBehindTheScenesEvent(parsedData);
+
+      // Transcript lines come ONLY from `ConversationText`. The Agent API also emits a
+      // `History` event with the same role + content; keying off `role` alone (as before)
+      // double-counted every line. Handling each frame here (instead of via a single
+      // overwritten `data` state) also stops bursts from dropping lines.
+      if (parsedData.type === EventType.CONVERSATION_TEXT) {
+        if (parsedData.role === "user") {
+          startListening();
+          if (statusRef.current !== VoiceBotStatus.SLEEPING) {
+            const endedAt = Date.now();
+            addVoicebotMessage({
+              user: parsedData.content,
+              startedAt: userSpeechStartRef.current,
+              endedAt,
+              silenceBefore: pendingSilenceRef.current,
+            });
+            lastActivityEndRef.current = endedAt;
+            userDoneAtRef.current = endedAt;
+            userSpeechStartRef.current = null;
+          }
+        } else if (parsedData.role === "assistant") {
+          if (statusRef.current !== VoiceBotStatus.SLEEPING && !isWaitingForUserVoiceAfterSleep.current) {
+            startSpeaking();
+            addVoicebotMessage({ assistant: parsedData.content });
+          }
+        }
+      }
+
+      if (parsedData.type === EventType.AGENT_AUDIO_DONE) {
+        lastActivityEndRef.current = Date.now();
+        // 24kHz * 16-bit mono = 48 bytes per millisecond of audio.
+        const audioDurationMs = Math.round(turnAudioBytesRef.current / 48);
+        if (pendingLatencyRef.current) {
+          // A normal turn: merge server latency with client-side measurements.
+          const measuredResponse =
+            turnFirstAudioRef.current != null && userDoneAtRef.current != null
+              ? turnFirstAudioRef.current - userDoneAtRef.current
+              : null;
+          attachLatency({
+            ...pendingLatencyRef.current,
+            measuredResponse,
+            audioDurationMs,
+            eager: turnEagerRef.current,
+            resumed: turnResumedRef.current,
+          });
+          pendingLatencyRef.current = null;
+        } else if (
+          !greetingMeasuredRef.current &&
+          settingsAppliedAtRef.current != null &&
+          turnFirstAudioRef.current != null
+        ) {
+          // The opening greeting (no server latency) — client-measured first-audio time.
+          greetingMeasuredRef.current = true;
+          attachLatency({
+            ttt_latency: 0,
+            tts_latency: 0,
+            total_latency: 0,
+            greetingTtfa: turnFirstAudioRef.current - settingsAppliedAtRef.current,
+            networkRtt: networkRttRef.current,
+            audioDurationMs,
+          });
+        }
+        startListening();
+      }
+      if (parsedData.type === EventType.USER_STARTED_SPEAKING) {
+        isWaitingForUserVoiceAfterSleep.current = false;
+        const now = Date.now();
+        pendingSilenceRef.current =
+          lastActivityEndRef.current != null ? now - lastActivityEndRef.current : null;
+        userSpeechStartRef.current = now;
+        // New turn — reset per-turn measurements.
+        turnFirstAudioRef.current = null;
+        turnAudioBytesRef.current = 0;
+        turnEagerRef.current = false;
+        turnResumedRef.current = false;
+        startListening();
+        clearAudioBuffer();
+      }
+      if (parsedData.type === EventType.EAGER_END_OF_TURN) {
+        turnEagerRef.current = true;
+      }
+      // Eager end-of-turn (Flux): the agent may start an "eager" reply before the user
+      // truly finished. If the user keeps talking, the server sends TurnResumed — discard
+      // any audio we already started playing so the early/stale reply doesn't talk over them.
+      if (parsedData.type === EventType.TURN_RESUMED) {
+        turnResumedRef.current = true;
+        startListening();
+        clearAudioBuffer();
+      }
+      if (parsedData.type === EventType.SETTINGS_APPLIED) {
+        settingsAppliedAtRef.current = Date.now();
+        if (settingsSentAtRef.current != null) {
+          networkRttRef.current = Date.now() - settingsSentAtRef.current;
+          console.log(`[network] 往返 (中国↔Deepgram US) ~${networkRttRef.current} ms`);
+        }
+      }
+      if (parsedData.type === EventType.AGENT_STARTED_SPEAKING) {
+        const { tts_latency, ttt_latency, total_latency } = parsedData;
+        const timestamp = Date.now();
+        const ts = new Date(timestamp).toLocaleTimeString("zh-CN", { hour12: false });
+        const rtt = networkRttRef.current;
+        console.log(
+          `[latency ${ts}] 思考(LLM) ${Math.round(ttt_latency * 1000)}ms · 合成(TTS) ${Math.round(
+            tts_latency * 1000,
+          )}ms · 总计 ${Math.round(total_latency * 1000)}ms${
+            rtt != null ? ` · 网络往返 ~${rtt}ms` : ""
+          }`,
+        );
+        if (!tts_latency || !ttt_latency) return;
+        pendingLatencyRef.current = { tts_latency, ttt_latency, total_latency, timestamp, networkRtt: rtt };
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [bufferAudio, status],
+    [bufferAudio, onMessageEvent, startListening, startSpeaking],
   );
 
   /**
@@ -273,101 +422,9 @@ export const App = ({
     }
   }, [defaultStsConfig, previousPrompt, prompt, socket, socketState]);
 
-  /**
-   * Manage responses to incoming data from WebSocket.
-   * This useEffect primarily handles string-based data that is expected to represent JSON-encoded messages determining actions based on the nature of the message
-   * */
-  useEffect(() => {
-    /**
-     * When the API returns a message event, several possible things can occur.
-     *
-     * 1. If it's a user message, check if it's a wake word or a stop word and add it to the queue.
-     * 2. If it's an agent message, add it to the queue.
-     * 3. If the message type is `AgentAudioDone` switch the app state to `START_LISTENING`
-     */
-
-    if (typeof data === "string") {
-      const userRole = (data) => {
-        const userTranscript = data.content;
-
-        /**
-         * When the user says something, add it to the conversation queue.
-         */
-        if (status !== VoiceBotStatus.SLEEPING) {
-          addVoicebotMessage({ user: userTranscript });
-        }
-      };
-
-      /**
-       * When the assistant/agent says something, add it to the conversation queue.
-       */
-      const assistantRole = (data) => {
-        if (status !== VoiceBotStatus.SLEEPING && !isWaitingForUserVoiceAfterSleep.current) {
-          startSpeaking();
-          const assistantTranscript = data.content;
-          addVoicebotMessage({ assistant: assistantTranscript });
-        }
-      };
-
-      try {
-        const parsedData = JSON.parse(data);
-
-        /**
-         * Nothing was parsed so return an error.
-         */
-        if (!parsedData) {
-          throw new Error("No data returned in JSON.");
-        }
-
-        maybeRecordBehindTheScenesEvent(parsedData);
-
-        /**
-         * If it's a user message.
-         */
-        if (parsedData.role === "user") {
-          startListening();
-          userRole(parsedData);
-        }
-
-        /**
-         * If it's an agent message.
-         */
-        if (parsedData.role === "assistant") {
-          if (status !== VoiceBotStatus.SLEEPING) {
-            startSpeaking();
-          }
-          assistantRole(parsedData);
-        }
-
-        /**
-         * The agent has finished speaking so we reset the sleep timer.
-         */
-        if (parsedData.type === EventType.AGENT_AUDIO_DONE) {
-          // Note: It's not quite correct that the agent goes to the listening state upon receiving
-          // `AgentAudioDone`. When that message is sent, it just means that all of the agent's
-          // audio has arrived at the client, but the client will still be in the process of playing
-          // it, which means the agent is still speaking. In practice, with the way the server
-          // currently sends audio, this means Talon will deem the agent speech finished right when
-          // the agent begins speaking the final sentence of its reply.
-          startListening();
-        }
-        if (parsedData.type === EventType.USER_STARTED_SPEAKING) {
-          isWaitingForUserVoiceAfterSleep.current = false;
-          startListening();
-          clearAudioBuffer();
-        }
-        if (parsedData.type === EventType.AGENT_STARTED_SPEAKING) {
-          const { tts_latency, ttt_latency, total_latency } = parsedData;
-          if (!tts_latency || !ttt_latency) return;
-          const latencyMessage = { tts_latency, ttt_latency, total_latency };
-          addVoicebotMessage(latencyMessage);
-        }
-      } catch (error) {
-        console.error(data, error);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, socket]);
+  // Server messages are now handled directly in `onMessage` (above), so each frame is
+  // processed exactly once. Previously they were funnelled through a single `data` state
+  // variable + this effect, which dropped frames under bursts and double-counted lines.
 
   const handleVoiceBotAction = () => {
     if (requiresUserActionToInitialize && !isInitialized) {
@@ -387,7 +444,7 @@ export const App = ({
         });
         break;
       case EventType.USER_STARTED_SPEAKING:
-        if (status === VoiceBotStatus.SPEAKING) {
+        if (statusRef.current === VoiceBotStatus.SPEAKING) {
           addBehindTheScenesEvent({
             type: "Interruption",
           });

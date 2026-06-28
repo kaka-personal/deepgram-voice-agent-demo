@@ -32,6 +32,9 @@ export const useStsQueryParams = () => {
     (config: StsConfig) => {
       const { voice, prompt, think_provider, think_model } = params;
 
+      // Note: `voice` (Deepgram Aura) selection is intentionally NOT applied here.
+      // This agent uses Cartesia for Chinese TTS, so we preserve config.agent.speak as-is.
+      void voice;
       return {
         ...config,
         agent: {
@@ -43,13 +46,6 @@ export const useStsQueryParams = () => {
             ...(prompt && {
               prompt: `${config.agent.think.prompt}\n${prompt}`,
             }),
-          },
-          speak: {
-            ...config.agent.speak,
-            provider: {
-              type: "deepgram",
-              ...(voice ? { model: voice } : { model: config.agent.speak.provider.model }),
-            },
           },
         },
       };
